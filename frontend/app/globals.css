@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: light dark; }
+body {
+  @apply bg-gradient-to-b from-zinc-50 to-white dark:from-zinc-950 dark:to-zinc-900 text-zinc-900 dark:text-zinc-100;
+}
+
+.container { @apply mx-auto max-w-5xl p-6; }
+.btn { @apply inline-flex items-center gap-2 rounded-2xl px-4 py-2 bg-zinc-900 text-white dark:bg-white/10 backdrop-blur border border-black/10 dark:border-white/10 hover:opacity-90 transition; }
+.card { @apply rounded-2xl border border-black/10 dark:border-white/10 p-5 bg-white/60 dark:bg-white/5 backdrop-blur; }
+.input { @apply w-full rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-white/10 px-3 py-2; }
+.badge { @apply text-xs px-2 py-0.5 rounded bg-zinc-100 dark:bg-white/10; }
+.tab { @apply btn; }
+.tab.inactive { @apply opacity-60; }
+.area { @apply whitespace-pre-wrap; }
