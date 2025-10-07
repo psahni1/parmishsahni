@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 from openai import OpenAI
+from fastapi.responses import RedirectResponse, JSONResponse
 
 from utils import clean_text, canonicalize
 
@@ -20,24 +21,28 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o")
 OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
 
+# allow a comma-separated list in env (optional), else default to the two Vercel URLs
+FRONTEND_ORIGINS = os.getenv(
+    "FRONTEND_ORIGINS",
+    "https://parmishsahni-git-main-psahni1s-projects.vercel.app,https://parmishsahni.vercel.app",
+)
+ALLOWED_ORIGINS = [o.strip() for o in FRONTEND_ORIGINS.split(",") if o.strip()]
+
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # --------- App & CORS ----------
 app = FastAPI(title="AI Search Bot", version="1.0")
-from fastapi.responses import RedirectResponse, JSONResponse
 
 @app.get("/", include_in_schema=False)
 def home():
-    # Either return a simple JSON message:
-    # return JSONResponse({"ok": True, "message": "Backend is running. See /docs"})
-    # Or redirect to your interactive API docs:
+    # Redirect to API docs (prevents 404 on root)
     return RedirectResponse(url="/docs")
 
-# In production, set allow_origins to your exact frontend:
-# e.g., ["https://app.yourdomain.com"]
+# IMPORTANT: use explicit origins for browser calls from Vercel
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # change to your frontend domain before going live
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -50,7 +55,7 @@ SYSTEM_PROMPT = (
 
 # --------- Simple in-memory stores ----------
 SESSIONS: dict[str, list[dict]] = {}  # chat history per session
-PDF_INDEX: dict[str, dict] = {}       # {doc_id: {"chunks": [str], "embeddings": np.ndarray}}
+PDF_INDEX: dict[str, dict] = {}       # {doc_id: {'chunks': [str], 'embeddings': np.ndarray}}
 
 # --------- Models ----------
 class AskRequest(BaseModel):
@@ -93,23 +98,33 @@ async def fetch_url(url: str, timeout: int = 20) -> Optional[str]:
             return None
 
 def ddg_search(query: str, max_results: int = 6) -> List[dict]:
-    results = []
-    with DDGS() as ddgs:
-        for r in ddgs.text(query, max_results=max_results, safesearch="moderate"):
-            if not r or "href" not in r:
+    """
+    Perform a DuckDuckGo search but NEVER crash the server if remote requests time out.
+    Returns an empty list on error so /ask can still respond gracefully.
+    """
+    try:
+        results = []
+        # DDGS() will do outbound HTTP; this might be throttled on hobby tiers.
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results, safesearch="moderate"):
+                if not r or "href" not in r:
+                    continue
+                results.append({
+                    "title": r.get("title", ""),
+                    "url": canonicalize(r["href"]),
+                    "snippet": r.get("body", "")
+                })
+        # de-duplicate
+        seen, unique = set(), []
+        for item in results:
+            if item["url"] in seen:
                 continue
-            results.append({
-                "title": r.get("title", ""),
-                "url": canonicalize(r["href"]),
-                "snippet": r.get("body", "")
-            })
-    # de-duplicate
-    seen, unique = set(), []
-    for item in results:
-        if item["url"] in seen:
-            continue
-        seen.add(item["url"]); unique.append(item)
-    return unique
+            seen.add(item["url"]); unique.append(item)
+        return unique
+    except Exception as e:
+        # Log and fall back to model-only answer
+        print("DuckDuckGo search failed:", repr(e))
+        return []
 
 async def gather_pages(urls: List[str], max_pages: int, max_chars_per_doc: int) -> List[dict]:
     urls = urls[:max_pages]
@@ -162,15 +177,15 @@ def health():
 async def ask(req: AskRequest):
     hits = ddg_search(req.query, max_results=req.max_results)
     urls = [h["url"] for h in hits]
-    docs = await gather_pages(urls, req.max_pages, req.max_chars_per_doc)
+    docs = await gather_pages(urls, req.max_pages, req.max_chars_per_doc) if urls else []
 
     sources = [d["url"] for d in docs]
-    bundles = []
-    for i, d in enumerate(docs, start=1):
-        bundles.append(f"Source [{i}] ({d['url']}):\n{d['text'][:900]}\n")
-    context = "\n\n".join(bundles) if bundles else "No web sources retrieved."
-
-    user_block = f"""User question:
+    if docs:
+        bundles = []
+        for i, d in enumerate(docs, start=1):
+            bundles.append(f"Source [{i}] ({d['url']}):\n{d['text'][:900]}\n")
+        context = "\n\n".join(bundles)
+        user_block = f"""User question:
 {req.query}
 
 Web evidence (cite [1], [2], ...):
@@ -180,11 +195,16 @@ Instructions:
 - Concise answer with citations that map to the source order above.
 - If evidence is weak or conflicting, say so briefly.
 """
-
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_block},
-    ]
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_block},
+        ]
+    else:
+        # No web evidence available (e.g., search failed) — answer without citations
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant. If you lack sources, be clear about uncertainty."},
+            {"role": "user", "content": f"Question (no web results available): {req.query}"},
+        ]
 
     out = client.responses.create(model=OPENAI_MODEL, input=messages, temperature=0.2)
     return AskResponse(answer=out.output_text.strip(), sources=sources)
@@ -225,7 +245,6 @@ def chat(req: ChatRequest):
     history = SESSIONS.get(sid, [])
     history.append({"role":"user","content":req.message})
 
-    # Using classic chat.completions for simple compatibility
     resp = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[{"role":"system","content":"You are a helpful assistant."}] + history,
@@ -244,7 +263,6 @@ async def chat_stream(req: StreamRequest):
     history.append({"role":"user","content":req.message})
 
     async def event_gen():
-        # Stream tokens from Chat Completions API
         stream = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[{"role":"system","content":"You are a helpful assistant."}] + history,
@@ -305,6 +323,9 @@ def pdf_ask(req: PdfAskRequest):
     ]
     out = client.responses.create(model=OPENAI_MODEL, input=prompt, temperature=0.2)
     return {"answer": out.output_text.strip(), "selected_chunks": top_idx}
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=10000)
+    # use PORT env if present (Render injects it)
+    port = int(os.getenv("PORT", "10000"))
+    uvicorn.run("app:app", host="0.0.0.0", port=port)
