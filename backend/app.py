@@ -6,12 +6,12 @@ import fitz  # PyMuPDF
 import httpx
 import trafilatura
 from duckduckgo_search import DDGS
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 from openai import OpenAI
-from fastapi.responses import RedirectResponse, JSONResponse
 
 from utils import clean_text, canonicalize
 
@@ -20,8 +20,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4o")
 OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
+ENABLE_WEB = os.getenv("ENABLE_WEB", "1") == "1"  # set to 0 on Render free tier
 
-# allow a comma-separated list in env (optional), else default to the two Vercel URLs
+# allow comma-separated override of allowed origins
 FRONTEND_ORIGINS = os.getenv(
     "FRONTEND_ORIGINS",
     "https://parmishsahni-git-main-psahni1s-projects.vercel.app,https://parmishsahni.vercel.app",
@@ -33,12 +34,11 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 # --------- App & CORS ----------
 app = FastAPI(title="AI Search Bot", version="1.0")
 
-@app.get("/", include_in_schema=False)
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 def home():
-    # Redirect to API docs (prevents 404 on root)
-    return RedirectResponse(url="/docs")
+    # HEAD gets 200; GET redirects to /docs
+    return Response(status_code=200) if "HEAD" else RedirectResponse(url="/docs")
 
-# IMPORTANT: use explicit origins for browser calls from Vercel
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -54,8 +54,8 @@ SYSTEM_PROMPT = (
 )
 
 # --------- Simple in-memory stores ----------
-SESSIONS: dict[str, list[dict]] = {}  # chat history per session
-PDF_INDEX: dict[str, dict] = {}       # {doc_id: {'chunks': [str], 'embeddings': np.ndarray}}
+SESSIONS: dict[str, list[dict]] = {}
+PDF_INDEX: dict[str, dict] = {}
 
 # --------- Models ----------
 class AskRequest(BaseModel):
@@ -98,13 +98,11 @@ async def fetch_url(url: str, timeout: int = 20) -> Optional[str]:
             return None
 
 def ddg_search(query: str, max_results: int = 6) -> List[dict]:
-    """
-    Perform a DuckDuckGo search but NEVER crash the server if remote requests time out.
-    Returns an empty list on error so /ask can still respond gracefully.
-    """
+    """Never crash the server on network errors; return [] instead."""
+    if not ENABLE_WEB:
+        return []
     try:
         results = []
-        # DDGS() will do outbound HTTP; this might be throttled on hobby tiers.
         with DDGS() as ddgs:
             for r in ddgs.text(query, max_results=max_results, safesearch="moderate"):
                 if not r or "href" not in r:
@@ -114,7 +112,7 @@ def ddg_search(query: str, max_results: int = 6) -> List[dict]:
                     "url": canonicalize(r["href"]),
                     "snippet": r.get("body", "")
                 })
-        # de-duplicate
+        # de-dup
         seen, unique = set(), []
         for item in results:
             if item["url"] in seen:
@@ -122,7 +120,6 @@ def ddg_search(query: str, max_results: int = 6) -> List[dict]:
             seen.add(item["url"]); unique.append(item)
         return unique
     except Exception as e:
-        # Log and fall back to model-only answer
         print("DuckDuckGo search failed:", repr(e))
         return []
 
@@ -185,29 +182,24 @@ async def ask(req: AskRequest):
         for i, d in enumerate(docs, start=1):
             bundles.append(f"Source [{i}] ({d['url']}):\n{d['text'][:900]}\n")
         context = "\n\n".join(bundles)
-        user_block = f"""User question:
-{req.query}
-
-Web evidence (cite [1], [2], ...):
-{context}
-
-Instructions:
-- Concise answer with citations that map to the source order above.
-- If evidence is weak or conflicting, say so briefly.
-"""
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_block},
+            {"role": "user", "content": f"User question:\n{req.query}\n\nWeb evidence (cite [1], [2], ...):\n{context}\n\nInstructions:\n- Concise answer with citations that map to the source order above.\n- If evidence is weak or conflicting, say so briefly."},
         ]
     else:
-        # No web evidence available (e.g., search failed) — answer without citations
         messages = [
             {"role": "system", "content": "You are a helpful assistant. If you lack sources, be clear about uncertainty."},
             {"role": "user", "content": f"Question (no web results available): {req.query}"},
         ]
 
-    out = client.responses.create(model=OPENAI_MODEL, input=messages, temperature=0.2)
-    return AskResponse(answer=out.output_text.strip(), sources=sources)
+    # Use Chat Completions (SDK compatibility)
+    resp = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=messages,
+        temperature=0.2,
+    )
+    answer = (resp.choices[0].message.content or "").strip()
+    return AskResponse(answer=answer, sources=sources)
 
 # ---- Image Generation ----
 @app.post("/image/generate")
@@ -218,7 +210,6 @@ async def generate_image(req: ImageGenRequest):
         size=req.size,
         n=req.n
     )
-    # return base64 so the frontend can render data URLs
     return {"data": [d.b64_json for d in img.data]}
 
 # ---- OCR via Vision ----
@@ -226,17 +217,22 @@ async def generate_image(req: ImageGenRequest):
 async def ocr_image(file: UploadFile = File(...)):
     content = await file.read()
     b64 = "data:" + (file.content_type or "image/png") + ";base64," + base64.b64encode(content).decode()
-
-    msg = [
-        {"role": "system", "content": "Extract all visible text. Preserve line breaks if possible."},
-        {"role": "user",
-         "content": [
-             {"type": "input_text", "text": "Please OCR the image and return text only."},
-             {"type": "input_image", "image_url": {"url": b64}}
-         ]}
-    ]
-    resp = client.responses.create(model=OPENAI_VISION_MODEL, input=msg, temperature=0)
-    return {"text": resp.output_text.strip()}
+    resp = client.chat.completions.create(
+        model=OPENAI_VISION_MODEL,
+        messages=[{
+            "role": "system",
+            "content": "Extract all visible text. Preserve line breaks if possible."
+        },{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Please OCR the image and return text only."},
+                {"type": "image_url", "image_url": {"url": b64}}
+            ]
+        }],
+        temperature=0,
+    )
+    text = (resp.choices[0].message.content or "").strip()
+    return {"text": text}
 
 # ---- Chat (non-streaming, with simple history) ----
 @app.post("/chat")
@@ -284,7 +280,6 @@ async def chat_stream(req: StreamRequest):
     return EventSourceResponse(event_gen(), media_type="text/event-stream")
 
 def json_escape(s: str) -> str:
-    # minimal JSON string escaper for SSE payloads
     return '"' + s.replace('\\','\\\\').replace('"','\\"').replace('\n','\\n').replace('\r','') + '"'
 
 # ---- PDF upload + RAG ask ----
@@ -317,15 +312,19 @@ def pdf_ask(req: PdfAskRequest):
     top_idx = top_k_chunks(qvec, rows, k=req.k)
     context = "\n\n---\n\n".join([idx["chunks"][i] for i in top_idx])
 
-    prompt = [
+    messages = [
         {"role":"system","content":"Answer using only the provided PDF context. If unsure, say so."},
         {"role":"user","content": f"Question: {req.question}\n\nContext:\n{context}"}
     ]
-    out = client.responses.create(model=OPENAI_MODEL, input=prompt, temperature=0.2)
-    return {"answer": out.output_text.strip(), "selected_chunks": top_idx}
+    resp = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=messages,
+        temperature=0.2,
+    )
+    answer = (resp.choices[0].message.content or "").strip()
+    return {"answer": answer, "selected_chunks": top_idx}
 
 if __name__ == "__main__":
     import uvicorn
-    # use PORT env if present (Render injects it)
     port = int(os.getenv("PORT", "10000"))
     uvicorn.run("app:app", host="0.0.0.0", port=port)
