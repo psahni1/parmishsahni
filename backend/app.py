@@ -297,3 +297,6 @@ def pdf_ask(req: PdfAskRequest):
     ]
     out = client.responses.create(model=OPENAI_MODEL, input=prompt, temperature=0.2)
     return {"answer": out.output_text.strip(), "selected_chunks": top_idx}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=10000)
