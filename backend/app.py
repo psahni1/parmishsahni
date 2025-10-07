@@ -24,6 +24,14 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 # --------- App & CORS ----------
 app = FastAPI(title="AI Search Bot", version="1.0")
+from fastapi.responses import RedirectResponse, JSONResponse
+
+@app.get("/", include_in_schema=False)
+def home():
+    # Either return a simple JSON message:
+    # return JSONResponse({"ok": True, "message": "Backend is running. See /docs"})
+    # Or redirect to your interactive API docs:
+    return RedirectResponse(url="/docs")
 
 # In production, set allow_origins to your exact frontend:
 # e.g., ["https://app.yourdomain.com"]
