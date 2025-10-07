@@ -1,8 +1,8 @@
 "use client";
-import { useState } from "react";
-import clsx from "clsx";
 
-const API = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+import { useState } from "react";
+
+const API = process.env.NEXT_PUBLIC_BACKEND_URL || "https://parmishsahni.onrender.com";
 
 type TabKey = "search" | "image" | "ocr" | "chat" | "pdf";
 
@@ -10,37 +10,47 @@ export default function Page() {
   const [tab, setTab] = useState<TabKey>("search");
 
   return (
-    <div className="space-y-6">
+    <div className="flex flex-col items-center text-center gap-10">
+      {/* Apple-style hero */}
+      <section className="max-w-3xl space-y-4">
+        <h1 className="text-5xl sm:text-6xl font-semibold tracking-tight">
+          Ask anything.<br className="hidden sm:block" /> Get beautiful answers.
+        </h1>
+        <p className="text-lg text-black/60 dark:text-white/70">
+          Fast • Accurate • Cited • Vision OCR • Images • PDF Q&A
+        </p>
+      </section>
+
       {/* Tabs */}
-      <div className="tabs w-full sm:w-auto">
-        {[
-          ["search", "Search"],
-          ["image", "Image"],
-          ["ocr", "OCR"],
-          ["chat", "Chat"],
-          ["pdf", "PDF Q&A"],
-        ].map(([k, label]) => (
+      <div className="tabs">
+        {(["search","image","ocr","chat","pdf"] as TabKey[]).map((k) => (
           <button
             key={k}
-            onClick={() => setTab(k as TabKey)}
-            className={clsx("tab", tab === k ? "active" : "inactive")}
+            className={`tab ${tab === k ? "tab-active" : "tab-inactive"}`}
+            onClick={() => setTab(k)}
           >
-            {label}
+            {k === "search" && "Search"}
+            {k === "image"  && "Image"}
+            {k === "ocr"    && "OCR"}
+            {k === "chat"   && "Chat"}
+            {k === "pdf"    && "PDF Q&A"}
           </button>
         ))}
       </div>
 
       {/* Panels */}
-      {tab === "search" && <SearchPane />}
-      {tab === "image" && <ImagePane />}
-      {tab === "ocr" && <OCRPane />}
-      {tab === "chat" && <ChatPane />}
-      {tab === "pdf" && <PDFPane />}
+      <div className="w-full max-w-3xl">
+        {tab === "search" && <SearchPane />}
+        {tab === "image"  && <ImagePane />}
+        {tab === "ocr"    && <OCRPane />}
+        {tab === "chat"   && <ChatPane />}
+        {tab === "pdf"    && <PDFPane />}
+      </div>
     </div>
   );
 }
 
-/* ---------- Search ---------- */
+/* -------------------- Search -------------------- */
 function SearchPane() {
   const [q, setQ] = useState("");
   const [answer, setAnswer] = useState("");
@@ -49,10 +59,7 @@ function SearchPane() {
   const [err, setErr] = useState("");
 
   const ask = async () => {
-    setLoading(true);
-    setAnswer("");
-    setSources([]);
-    setErr("");
+    setLoading(true); setErr(""); setAnswer(""); setSources([]);
     try {
       const resp = await fetch(`${API}/ask`, {
         method: "POST",
@@ -64,35 +71,36 @@ function SearchPane() {
       setAnswer(data.answer || "(no answer)");
       setSources(data.sources || []);
     } catch (e: any) {
-      setErr(e.message);
+      setErr(e.message || "Failed");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="card space-y-4">
-      <div className="space-y-2">
+    <div className="card p-6 space-y-4">
+      <div className="space-y-2 text-left">
         <label className="label">Ask anything</label>
-        <input
-          className="input"
-          placeholder="What changed in HTTP/3 vs HTTP/2?"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
+        <div className="flex flex-col sm:flex-row gap-3">
+          <input
+            className="input flex-1"
+            placeholder="What changed in HTTP/3 vs HTTP/2?"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+          <button className="btn self-start" onClick={ask} disabled={loading || !q.trim()}>
+            {loading ? "Thinking…" : "Ask"}
+          </button>
+        </div>
       </div>
-      <div className="flex gap-2">
-        <button className="btn" onClick={ask} disabled={loading || !q.trim()}>
-          {loading ? "Thinking…" : "Ask"}
-        </button>
-        <span className="text-xs text-zinc-500 self-center">Responses include sources.</span>
-      </div>
-      {err && <div className="text-sm text-red-600 dark:text-red-400">Error: {err}</div>}
+
+      {err && <div className="text-sm text-red-600 dark:text-red-400 text-left">Error: {err}</div>}
+
       {answer && (
-        <div className="space-y-3">
+        <div className="space-y-3 text-left">
           <div className="area">{answer}</div>
           {sources.length > 0 && (
-            <div className="text-sm">
+            <div className="text-sm space-y-1">
               <div className="font-medium">Sources</div>
               <ul className="list-disc pl-5">
                 {sources.map((s, i) => (
@@ -107,21 +115,18 @@ function SearchPane() {
           )}
         </div>
       )}
-      {!answer && !err && !loading && (
-        <div className="text-sm text-zinc-500">Try “What’s new in React Server Components?”</div>
-      )}
     </div>
   );
 }
 
-/* ---------- Image ---------- */
+/* -------------------- Image -------------------- */
 function ImagePane() {
   const [prompt, setPrompt] = useState("");
   const [images, setImages] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+
   const gen = async () => {
-    setLoading(true);
-    setImages([]);
+    setLoading(true); setImages([]);
     try {
       const resp = await fetch(`${API}/image/generate`, {
         method: "POST",
@@ -135,20 +140,24 @@ function ImagePane() {
       setLoading(false);
     }
   };
+
   return (
-    <div className="card space-y-3">
-      <div className="space-y-2">
-        <label className="label">Prompt</label>
+    <div className="card p-6 space-y-3">
+      <div className="text-left space-y-2">
+        <label className="label">Image prompt</label>
         <input className="input" value={prompt} onChange={(e) => setPrompt(e.target.value)}
-               placeholder="A cozy neon-lit desk with plants" />
+               placeholder="A pastel, neon-lit desk with plants and a MacBook" />
       </div>
-      <button className="btn" onClick={gen} disabled={loading || !prompt.trim()}>
-        {loading ? "Generating…" : "Generate"}
-      </button>
+      <div className="flex gap-3">
+        <button className="btn" onClick={gen} disabled={loading || !prompt.trim()}>
+          {loading ? "Generating…" : "Generate"}
+        </button>
+        <button className="btn-ghost" onClick={() => setImages([])}>Clear</button>
+      </div>
       {images.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {images.map((src, i) => (
-            <img key={i} src={src} alt={`gen-${i}`} className="rounded-xl border" />
+            <img key={i} src={src} alt={`gen-${i}`} className="rounded-2xl border border-black/10 dark:border-white/10 shadow-soft" />
           ))}
         </div>
       )}
@@ -156,15 +165,15 @@ function ImagePane() {
   );
 }
 
-/* ---------- OCR ---------- */
+/* -------------------- OCR -------------------- */
 function OCRPane() {
   const [file, setFile] = useState<File | null>(null);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
+
   const ocr = async () => {
     if (!file) return;
-    setLoading(true);
-    setText("");
+    setLoading(true); setText("");
     const fd = new FormData();
     fd.append("file", file);
     const resp = await fetch(`${API}/ocr`, { method: "POST", body: fd });
@@ -172,11 +181,12 @@ function OCRPane() {
     setText(data.text || "(no text)");
     setLoading(false);
   };
+
   return (
-    <div className="card space-y-3">
-      <div className="space-y-2">
-        <label className="label">Upload image</label>
-        <input type="file" onChange={(e) => setFile(e.target.files?.[0] || null)} accept="image/*" />
+    <div className="card p-6 space-y-3">
+      <div className="text-left space-y-2">
+        <label className="label">Upload an image (JPG/PNG)</label>
+        <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
       </div>
       <button className="btn" onClick={ocr} disabled={loading || !file}>
         {loading ? "Reading…" : "Run OCR"}
@@ -186,12 +196,13 @@ function OCRPane() {
   );
 }
 
-/* ---------- Chat ---------- */
+/* -------------------- Chat -------------------- */
 function ChatPane() {
-  const [sessionId, setSessionId] = useState<string | undefined>(undefined);
+  const [sessionId, setSessionId] = useState<string | undefined>();
   const [message, setMessage] = useState("");
-  const [transcript, setTranscript] = useState<string>("");
+  const [transcript, setTranscript] = useState<string>("Say hi 👋");
   const [loading, setLoading] = useState(false);
+
   const send = async () => {
     setLoading(true);
     setTranscript((prev) => prev + `\n\nYou: ${message}\nAssistant: `);
@@ -206,24 +217,25 @@ function ChatPane() {
     setMessage("");
     setLoading(false);
   };
+
   return (
-    <div className="card space-y-3">
-      <div className="text-xs text-zinc-500">
-        Session: <span className="badge">{sessionId || "new"}</span>
+    <div className="card p-6 space-y-3">
+      <div className="text-left text-xs text-black/60 dark:text-white/60">
+        Session: <span className="rounded-full px-2 py-1 bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/10">{sessionId || "new"}</span>
       </div>
-      <div className="flex gap-2">
+      <div className="flex gap-3">
         <input className="input flex-1" placeholder="Ask anything…" value={message}
                onChange={(e) => setMessage(e.target.value)} />
         <button className="btn" onClick={send} disabled={loading || !message.trim()}>
           {loading ? "Thinking…" : "Send"}
         </button>
       </div>
-      <div className="area min-h-[160px]">{transcript || "Say hi 👋"}</div>
+      <div className="area min-h-[160px] text-left">{transcript}</div>
     </div>
   );
 }
 
-/* ---------- PDF Q&A ---------- */
+/* -------------------- PDF Q&A -------------------- */
 function PDFPane() {
   const [docId, setDocId] = useState<string>("");
   const [file, setFile] = useState<File | null>(null);
@@ -233,8 +245,7 @@ function PDFPane() {
 
   const upload = async () => {
     if (!file) return;
-    setStatus("Uploading & indexing…");
-    setAns("");
+    setStatus("Uploading & indexing…"); setAns("");
     const fd = new FormData();
     fd.append("file", file);
     const resp = await fetch(`${API}/pdf/upload`, { method: "POST", body: fd });
@@ -259,20 +270,25 @@ function PDFPane() {
   };
 
   return (
-    <div className="card space-y-3">
-      <div className="text-sm">1) Upload a PDF → 2) Ask about its content</div>
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <input type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-        <button className="btn" onClick={upload} disabled={!file}>Upload & Index</button>
+    <div className="card p-6 space-y-4">
+      <div className="text-left space-y-2">
+        <div className="label">1) Upload a PDF → 2) Ask about its content</div>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <input type="file" accept="application/pdf" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+          <button className="btn self-start" onClick={upload} disabled={!file}>Upload & Index</button>
+        </div>
       </div>
-      {status && <div className="text-xs text-zinc-600 dark:text-zinc-400">{status}</div>}
-      {docId && (<div className="text-xs">doc_id: <span className="badge">{docId}</span></div>)}
-      <div className="flex gap-2">
+
+      {status && <div className="text-xs text-black/60 dark:text-white/60 text-left">{status}</div>}
+      {docId && (<div className="text-xs text-left">doc_id: <span className="rounded-full px-2 py-1 bg-white/60 dark:bg-white/10 border border-black/10 dark:border-white/10">{docId}</span></div>)}
+
+      <div className="flex gap-3">
         <input className="input flex-1" placeholder="Your question about the PDF…" value={q}
                onChange={(e) => setQ(e.target.value)} />
         <button className="btn" onClick={ask} disabled={!docId || !q.trim()}>Ask</button>
       </div>
-      {ans && <div className="area">{ans}</div>}
+
+      {ans && <div className="area text-left">{ans}</div>}
     </div>
   );
 }
